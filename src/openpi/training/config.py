@@ -91,6 +91,13 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # Doosan-only loader-time provenance contract. These remain None for all
+    # non-Doosan datasets. When set, the LeRobot loader validates
+    # meta/export_provenance.json before reading samples.
+    doosan_orientation_representation: doosan_policy.OrientationRepresentation | None = None
+    doosan_state_mode: doosan_policy.StateMode | None = None
+    doosan_require_explicit_model_state_profile: bool = False
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -367,6 +374,10 @@ class LeRobotDoosanDataConfig(DataConfigFactory):
 
     orientation_representation: doosan_policy.OrientationRepresentation = "rotvec_principal"
     state_mode: doosan_policy.StateMode = "full"
+    # Final thesis training is fail-closed: even the historical default
+    # rotvec_principal/full export must carry explicit model_state_profile
+    # metadata. Set False only to inspect a legacy smoke export.
+    require_explicit_model_state_profile: bool = True
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -408,6 +419,9 @@ class LeRobotDoosanDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             action_sequence_keys=("action",),
             prompt_from_task=True,
+            doosan_orientation_representation=self.orientation_representation,
+            doosan_state_mode=self.state_mode,
+            doosan_require_explicit_model_state_profile=self.require_explicit_model_state_profile,
         )
 
 

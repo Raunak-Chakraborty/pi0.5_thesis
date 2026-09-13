@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -89,10 +91,11 @@ def test_inputs_reject_nonfinite_state_and_actions():
 def test_model_state_profile_metadata_is_fail_closed():
     profile = {
         "schema_version": "doosan_model_state_profile_v1",
-        "profile_id": "unused-by-adapter-test",
+        "profile_id": "doosan_full_rotvec_continuous_v1",
         "orientation_representation": "rotvec_continuous",
         "include_wrench": True,
         "state_dim": 25,
+        "state_mode": "full",
         "wrench_policy": "final_six_channels",
     }
     doosan_policy.validate_model_state_profile_metadata(
@@ -114,3 +117,77 @@ def test_outputs_return_only_seven_semantic_action_dimensions():
     result = doosan_policy.DoosanOutputs()({"actions": actions})
     assert result["actions"].shape == (3, 7)
     np.testing.assert_array_equal(result["actions"], actions[:, :7])
+
+
+def _write_export_provenance(tmp_path, *, profile=None, state_dim=25):
+    meta = tmp_path / "meta"
+    meta.mkdir(parents=True)
+    payload = {
+        "schema_version": "doosan_forcevla_lerobot_v21_export_v1",
+        "state_dim": state_dim,
+        "action_dim": 7,
+    }
+    if profile is not None:
+        payload["model_state_profile"] = profile
+    (meta / "export_provenance.json").write_text(json.dumps(payload))
+
+
+def test_lerobot_export_provenance_accepts_explicit_profile(tmp_path):
+    profile = {
+        "schema_version": "doosan_model_state_profile_v1",
+        "profile_id": "doosan_full_rotation6d_v1",
+        "orientation_representation": "rotation6d",
+        "include_wrench": True,
+        "state_dim": 28,
+        "state_mode": "full",
+        "wrench_policy": "final_six_channels",
+    }
+    _write_export_provenance(tmp_path, profile=profile, state_dim=28)
+
+    doosan_policy.validate_lerobot_export_provenance(
+        tmp_path,
+        orientation_representation="rotation6d",
+        state_mode="full",
+    )
+
+
+def test_lerobot_export_provenance_rejects_missing_profile_by_default(tmp_path):
+    _write_export_provenance(tmp_path, state_dim=25)
+
+    with pytest.raises(ValueError, match="missing model_state_profile"):
+        doosan_policy.validate_lerobot_export_provenance(
+            tmp_path,
+            orientation_representation="rotvec_principal",
+            state_mode="full",
+        )
+
+
+def test_lerobot_export_provenance_legacy_default_requires_explicit_opt_out(tmp_path):
+    _write_export_provenance(tmp_path, state_dim=25)
+
+    doosan_policy.validate_lerobot_export_provenance(
+        tmp_path,
+        orientation_representation="rotvec_principal",
+        state_mode="full",
+        require_explicit_profile=False,
+    )
+
+
+def test_lerobot_export_provenance_rejects_equal_width_wrong_rotvec_profile(tmp_path):
+    profile = {
+        "schema_version": "doosan_model_state_profile_v1",
+        "profile_id": "doosan_full_rotvec_continuous_v1",
+        "orientation_representation": "rotvec_continuous",
+        "include_wrench": True,
+        "state_dim": 25,
+        "state_mode": "full",
+        "wrench_policy": "final_six_channels",
+    }
+    _write_export_provenance(tmp_path, profile=profile, state_dim=25)
+
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        doosan_policy.validate_lerobot_export_provenance(
+            tmp_path,
+            orientation_representation="rotvec_principal",
+            state_mode="full",
+        )

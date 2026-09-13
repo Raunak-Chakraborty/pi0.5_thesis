@@ -11,6 +11,8 @@ must not pass through :class:`openpi.transforms.DeltaActions` again.
 
 from collections.abc import Mapping
 import dataclasses
+import json
+from pathlib import Path
 from typing import Literal, TypeAlias
 
 import einops
@@ -28,6 +30,7 @@ OrientationRepresentation: TypeAlias = Literal[
 StateMode: TypeAlias = Literal["no_wrench", "full"]
 
 MODEL_STATE_PROFILE_SCHEMA_ID = "doosan_model_state_profile_v1"
+EXPORT_PROVENANCE_SCHEMA_ID = "doosan_forcevla_lerobot_v21_export_v1"
 SEMANTIC_ACTION_DIM = 7
 
 _STATE_DIMS: dict[tuple[str, str], int] = {
@@ -56,28 +59,33 @@ def expected_state_dim(
         ) from exc
 
 
+def expected_profile_id(
+    orientation_representation: OrientationRepresentation,
+    state_mode: StateMode,
+) -> str:
+    """Return the exporter-owned profile identifier for one Doosan state layout."""
+    expected_state_dim(orientation_representation, state_mode)
+    return f"doosan_{state_mode}_{orientation_representation}_v1"
+
+
 def validate_model_state_profile_metadata(
     profile: Mapping[str, object],
     *,
     orientation_representation: OrientationRepresentation,
     state_mode: StateMode,
 ) -> None:
-    """Fail closed when exporter provenance disagrees with the selected profile.
-
-    Non-default data-tools exports write this object under
-    ``meta/export_provenance.json -> model_state_profile``. The legacy default
-    export may omit it; callers that require representation-explicit provenance
-    should require the object before invoking this validator.
-    """
+    """Fail closed when exporter provenance disagrees with the selected profile."""
     expected_dim = expected_state_dim(orientation_representation, state_mode)
     expected_wrench = state_mode == "full"
     expected_wrench_policy = "final_six_channels" if expected_wrench else "omitted"
 
     expected = {
         "schema_version": MODEL_STATE_PROFILE_SCHEMA_ID,
+        "profile_id": expected_profile_id(orientation_representation, state_mode),
         "orientation_representation": orientation_representation,
         "include_wrench": expected_wrench,
         "state_dim": expected_dim,
+        "state_mode": state_mode,
         "wrench_policy": expected_wrench_policy,
     }
     mismatches = {
@@ -91,6 +99,78 @@ def validate_model_state_profile_metadata(
             for key, (actual, wanted) in mismatches.items()
         )
         raise ValueError(f"Doosan model_state_profile metadata mismatch: {details}")
+
+
+def validate_lerobot_export_provenance(
+    dataset_root: str | Path,
+    *,
+    orientation_representation: OrientationRepresentation,
+    state_mode: StateMode,
+    require_explicit_profile: bool = True,
+) -> None:
+    """Validate converter provenance before a Doosan LeRobot dataset is opened.
+
+    This is intentionally a loader-time gate, not a per-row transform check. Two
+    thesis profiles can have the same state width (notably the two 19D/25D
+    rotvec pairs), so shape validation alone cannot prove representation
+    identity.
+
+    The historical ``rotvec_principal/full`` exporter omitted
+    ``model_state_profile``. It is accepted only when callers explicitly opt out
+    of strict provenance. All thesis training configs should keep
+    ``require_explicit_profile=True``.
+    """
+    expected_dim = expected_state_dim(orientation_representation, state_mode)
+    root = Path(dataset_root)
+    path = root / "meta" / "export_provenance.json"
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"Doosan dataset provenance is required but missing: {path}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Doosan dataset provenance is invalid JSON: {path}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(f"Doosan dataset provenance must be a JSON object: {path}")
+
+    top_level_expected = {
+        "schema_version": EXPORT_PROVENANCE_SCHEMA_ID,
+        "state_dim": expected_dim,
+        "action_dim": SEMANTIC_ACTION_DIM,
+    }
+    top_level_mismatches = {
+        key: (payload.get(key), value)
+        for key, value in top_level_expected.items()
+        if payload.get(key) != value
+    }
+    if top_level_mismatches:
+        details = ", ".join(
+            f"{key}: got {actual!r}, expected {wanted!r}"
+            for key, (actual, wanted) in top_level_mismatches.items()
+        )
+        raise ValueError(f"Doosan export provenance mismatch: {details}")
+
+    profile = payload.get("model_state_profile")
+    if profile is None:
+        legacy_default = orientation_representation == "rotvec_principal" and state_mode == "full"
+        if require_explicit_profile or not legacy_default:
+            raise ValueError(
+                "Doosan export provenance is missing model_state_profile; "
+                "representation-explicit provenance is required"
+            )
+        return
+
+    if not isinstance(profile, Mapping):
+        raise ValueError("Doosan export provenance model_state_profile must be an object")
+
+    validate_model_state_profile_metadata(
+        profile,
+        orientation_representation=orientation_representation,
+        state_mode=state_mode,
+    )
 
 
 def make_doosan_example(

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 import openpi.models.model as _model
+import openpi.policies.doosan_policy as doosan_policy
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
@@ -138,6 +139,27 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+
+    doosan_orientation = data_config.doosan_orientation_representation
+    doosan_state_mode = data_config.doosan_state_mode
+    if (doosan_orientation is None) != (doosan_state_mode is None):
+        raise ValueError(
+            "Doosan provenance configuration is incomplete: orientation_representation "
+            "and state_mode must either both be set or both be None"
+        )
+    if doosan_orientation is not None and doosan_state_mode is not None:
+        dataset_root = getattr(dataset_meta, "root", None)
+        if dataset_root is None:
+            raise ValueError(
+                "Doosan provenance validation requires LeRobotDatasetMetadata.root"
+            )
+        doosan_policy.validate_lerobot_export_provenance(
+            dataset_root,
+            orientation_representation=doosan_orientation,
+            state_mode=doosan_state_mode,
+            require_explicit_profile=data_config.doosan_require_explicit_model_state_profile,
+        )
+
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={
