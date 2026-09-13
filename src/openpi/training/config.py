@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.doosan_policy as doosan_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -352,6 +353,61 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDoosanDataConfig(DataConfigFactory):
+    """LeRobot data config for the Doosan M1013 thesis π0.5 adapter.
+
+    The data-tools exporter already owns action differencing and orientation
+    representation selection. This config therefore performs no DeltaActions
+    transform.
+    """
+
+    orientation_representation: doosan_policy.OrientationRepresentation = "rotvec_principal"
+    state_mode: doosan_policy.StateMode = "full"
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        if model_config.model_type != ModelType.PI05:
+            raise ValueError(f"LeRobotDoosanDataConfig requires PI05, got {model_config.model_type}")
+
+        # Validate the configured profile before constructing any transforms.
+        doosan_policy.expected_state_dim(self.orientation_representation, self.state_mode)
+
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/external_camera_2": "observation.images.external_camera_2",
+                        "observation/tcp_camera": "observation.images.tcp_camera",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[
+                doosan_policy.DoosanInputs(
+                    model_type=model_config.model_type,
+                    orientation_representation=self.orientation_representation,
+                    state_mode=self.state_mode,
+                )
+            ],
+            outputs=[doosan_policy.DoosanOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+            prompt_from_task=True,
         )
 
 
